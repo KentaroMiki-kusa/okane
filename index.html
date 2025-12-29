@@ -1,0 +1,820 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>秘密の部屋</title>
+
+<!-- PWA -->
+<link rel="manifest" href="./manifest.webmanifest">
+<meta name="theme-color" content="#ffffff">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<link rel="apple-touch-icon" href="./icon-192.png">
+
+<style>
+  body { text-align:center; font-family:sans-serif; }
+  .row { margin: 10px 0; }
+  button { font-size: 18px; padding: 12px 18px; margin: 6px; }
+  input { font-size: 18px; padding: 10px; width: 180px; }
+  .panel {
+    display:inline-block; padding: 14px 18px; border: 1px solid #ccc;
+    border-radius: 10px; margin: 8px; vertical-align: top; min-width: 320px;
+  }
+  .small { font-size: 13px; color:#444; }
+  .msg { margin-top: 8px; min-height: 22px; font-size: 14px; white-space: pre-line; }
+  hr { margin: 12px 0; }
+  .big { font-size: 22px; }
+  canvas { border:1px solid #ddd; border-radius: 8px; display:block; margin: 10px auto; }
+  .reels { display:flex; justify-content:center; gap:10px; margin: 10px 0; }
+  .reel {
+    width:72px; height:72px; border:1px solid #ccc; border-radius: 12px;
+    display:flex; align-items:center; justify-content:center; font-size: 34px;
+    user-select:none;
+  }
+  .reel.spin { animation: wobble 0.2s linear infinite; }
+  @keyframes wobble { 0%{transform:translateY(0)} 50%{transform:translateY(-2px)} 100%{transform:translateY(0)} }
+</style>
+</head>
+<body>
+
+<h1>秘密の部屋</h1>
+<div class="big">
+  財布：<span id="wallet">0</span> 円　／　預金：<span id="bank">0</span> 円
+</div>
+<div class="small">
+  ※「スタート／ストップ」は財布の自動増加のみ。預金利息は時間経過で付与（低利・オフライン可）。
+  株価はストップ中でも動き続けます（タブ非表示時はブラウザ都合で間引きあり）。
+</div>
+
+<div class="row">
+  <button id="start">スタート（財布増加ON）</button>
+  <button id="stop">ストップ（財布増加OFF）</button>
+</div>
+
+<!-- 速度アップ（財布増加） -->
+<div class="panel">
+  <div><b>自動増加（財布）</b></div>
+  <div>増加間隔：<b><span id="intervalMs">500</span> ms</b></div>
+  <div class="small">（短いほど速い）</div>
+  <hr>
+  <div>アイテム：<b>高速化モジュール</b></div>
+  <div>価格：<b><span id="cost">50</span></b> 円</div>
+  <div>購入回数：<b><span id="level">0</span></b></div>
+  <button id="buy">購入して速くする</button>
+  <div class="small">※最速：100ms（上限）</div>
+  <div class="msg" id="msgWallet"></div>
+</div>
+
+<!-- 預金（低利・無限増殖） -->
+<div class="panel">
+  <div><b>預金（入金／引き出し）</b></div>
+  <div class="row">
+    <input id="amount" type="number" min="1" step="1" placeholder="金額（整数）">
+  </div>
+  <div class="row">
+    <button id="deposit">預金へ入れる</button>
+    <button id="withdraw">預金から引き出す</button>
+  </div>
+
+  <hr>
+
+  <div><b>預金利息（低利・無限）</b></div>
+  <div>利率：<b><span id="rateText"></span></b></div>
+  <div>付与間隔：<b><span id="interestIntervalText"></span></b></div>
+  <div class="small">※スタート/ストップに関係なく時間経過で利息（オフライン加算）</div>
+
+  <div class="msg" id="msgBank"></div>
+</div>
+
+<!-- 株（常時稼働） -->
+<div class="panel">
+  <div><b>株：長尾テック（常時稼働）</b></div>
+  <div>株価：<b>¥<span id="stockPrice">100.0</span></b></div>
+  <div class="small">
+    状態：<b><span id="trendState">---</span></b>（トレンド）／
+    イベント：<b><span id="eventState">---</span></b>
+  </div>
+
+  <canvas id="chart" width="320" height="140"></canvas>
+  <div class="small">過去60秒（1秒ごとの価格）</div>
+
+  <hr>
+
+  <div>保有株：<b><span id="shares">0</span></b> 株</div>
+  <div class="small">評価額：¥<span id="positionValue">0</span></div>
+
+  <div class="row">
+    <input id="shareAmount" type="number" min="1" step="1" placeholder="株数（整数）">
+  </div>
+  <div class="row">
+    <button id="buyShares">買う</button>
+    <button id="sellShares">売る</button>
+  </div>
+
+  <hr>
+
+  <div><b>株の設定</b></div>
+  <div class="small">
+    更新：<span id="stockTickText"></span> ／ ボラ：<span id="stockVolText"></span><br>
+    暴落確率：<span id="crashProbText"></span> ／ バブル確率：<span id="bubbleProbText"></span> ／ 超バブル確率：<span id="superBubbleProbText"></span><br>
+    暴落倍率：<span id="crashMultText"></span> ／ バブル倍率：<span id="bubbleMultText"></span> ／ 超バブル倍率：<span id="superBubbleMultText"></span><br>
+    平均回帰：基準 <span id="meanPriceText"></span> ／ 強さ <span id="meanRevertText"></span>
+  </div>
+
+  <div class="msg" id="msgStock"></div>
+</div>
+
+<!-- スロット -->
+<div class="panel">
+  <div><b>スロット（RTP 99% / オート対応）</b></div>
+  <div class="small">
+    ※RTP=長期の期待払い戻し率（短期は上下）<br>
+    ベット上限なし。財布から引かれ、当選時は財布に加算。
+  </div>
+
+  <div class="reels">
+    <div class="reel" id="reel1">🍒</div>
+    <div class="reel" id="reel2">🍋</div>
+    <div class="reel" id="reel3">🔔</div>
+  </div>
+
+  <div class="row">
+    <input id="bet" type="number" min="1" step="1" placeholder="ベット額（円）">
+  </div>
+  <div class="row">
+    <button id="spin">回す</button>
+    <button id="autoStart">オート開始</button>
+    <button id="autoStop">オート停止</button>
+  </div>
+
+  <hr>
+
+  <div class="small">
+    現在のRTP設定：<b><span id="rtpText">---</span></b><br>
+    配当スケール：<b><span id="scaleText">---</span></b>
+  </div>
+
+  <div class="msg" id="msgSlot"></div>
+</div>
+
+<script>
+/** =======================
+ * 保存キー
+ * ======================= */
+const KEY_WALLET   = "wallet";
+const KEY_BANK     = "bank";
+const KEY_INTERVAL = "intervalMs";
+const KEY_LEVEL    = "speedLevel";
+const KEY_COST     = "speedCost";
+
+// 預金利息（オフライン計算用）
+const KEY_BANK_REM = "bankRemainder";
+const KEY_BANK_LAST_TS = "bankLastInterestTs";
+
+// 株
+const KEY_STOCK_PRICE = "stockPrice";
+const KEY_SHARES      = "stockShares";
+const KEY_TREND_STATE = "trendState";
+const KEY_TREND_UNTIL = "trendUntilTs";
+const KEY_PRICE_SERIES = "priceSeries"; // 過去60点
+
+/** =======================
+ * 初期値
+ * ======================= */
+let wallet      = Number(localStorage.getItem(KEY_WALLET)) || 0;
+let bank        = Number(localStorage.getItem(KEY_BANK)) || 0;
+let intervalMs  = Number(localStorage.getItem(KEY_INTERVAL)) || 500;
+let level       = Number(localStorage.getItem(KEY_LEVEL)) || 0;
+let cost        = Number(localStorage.getItem(KEY_COST)) || 50;
+
+let bankRemainder = Number(localStorage.getItem(KEY_BANK_REM)) || 0;
+let bankLastInterestTs = Number(localStorage.getItem(KEY_BANK_LAST_TS)) || Date.now();
+
+// 株
+let stockPrice  = Number(localStorage.getItem(KEY_STOCK_PRICE)) || 100;
+let shares      = Number(localStorage.getItem(KEY_SHARES)) || 0;
+let trendState  = localStorage.getItem(KEY_TREND_STATE) || "BULL";
+let trendUntilTs= Number(localStorage.getItem(KEY_TREND_UNTIL)) || (Date.now() + 30000);
+
+// チャート系列
+let priceSeries = [];
+try {
+  const raw = localStorage.getItem(KEY_PRICE_SERIES);
+  if (raw) priceSeries = JSON.parse(raw);
+} catch (_) {}
+if (!Array.isArray(priceSeries)) priceSeries = [];
+if (priceSeries.length === 0) priceSeries = Array.from({length: 60}, () => Number(stockPrice.toFixed(1)));
+
+/** =======================
+ * 設定
+ * ======================= */
+const MIN_INTERVAL = 100;
+
+// 預金利息（低利）
+const INTEREST_INTERVAL_MS = 10000; // 10秒
+const INTEREST_RATE = 0.0005;       // 0.05% / 10秒
+
+// 株（常時）
+const STOCK_TICK_MS = 1000;
+const STOCK_VOLATILITY = 2.5;
+const DRIFT_BULL = 0.35;
+const DRIFT_BEAR = -0.35;
+const TREND_MIN_MS = 20000;
+const TREND_MAX_MS = 60000;
+
+// イベント
+const CRASH_PROB = 0.01;
+const BUBBLE_PROB = 0.01;
+const SUPER_BUBBLE_PROB = 0.002;
+
+// 暴落（マイルド）
+const CRASH_MULT_MIN = 0.85;
+const CRASH_MULT_MAX = 0.95;
+
+// バブル固定×1.43
+const BUBBLE_MULT_MIN = 1.43;
+const BUBBLE_MULT_MAX = 1.43;
+
+// 超バブル固定
+const SUPER_BUBBLE_MULT = 2.00;
+
+// 下限
+const STOCK_FLOOR = 1.0;
+
+// 平均回帰
+const MEAN_PRICE = 100;
+const MEAN_REVERT = 0.02;
+
+/** =======================
+ * スロット（RTP 99%）
+ * ======================= */
+const TARGET_RTP = 0.99;
+
+// シンボルと重み（出やすさ）
+const SYMBOLS = [
+  { s: "🍒", w: 30 },
+  { s: "🍋", w: 26 },
+  { s: "🔔", w: 18 },
+  { s: "⭐", w: 14 },
+  { s: "7️⃣", w: 9 },
+  { s: "💎", w: 3 }
+];
+
+// 基本配当（この後、RTP99%になるよう自動スケールする）
+// 3つ揃い倍率（ベット×倍率）
+const BASE_PAYOUT_3 = {
+  "🍒": 3.0,
+  "🍋": 3.2,
+  "🔔": 4.0,
+  "⭐": 6.0,
+  "7️⃣": 10.0,
+  "💎": 30.0
+};
+// 2つ揃い倍率（どれか2一致で薄く返す）
+const BASE_PAYOUT_2 = {
+  "🍒": 0.2,
+  "🍋": 0.2,
+  "🔔": 0.25,
+  "⭐": 0.35,
+  "7️⃣": 0.6,
+  "💎": 1.5
+};
+
+// オートスピン
+let autoTimer = null;
+const AUTO_SPIN_MS = 700; // 好きに調整可
+
+/** =======================
+ * タイマー
+ * ======================= */
+let walletTimer = null;  // 財布 自動増加（スタート中のみ）
+let stockTimer  = null;  // 株価更新（常時）
+let chartTimer  = null;
+
+/** =======================
+ * DOM
+ * ======================= */
+const elWallet = document.getElementById("wallet");
+const elBank   = document.getElementById("bank");
+const elInterval = document.getElementById("intervalMs");
+const elCost   = document.getElementById("cost");
+const elLevel  = document.getElementById("level");
+const msgWallet= document.getElementById("msgWallet");
+
+const btnStart = document.getElementById("start");
+const btnStop  = document.getElementById("stop");
+const btnBuy   = document.getElementById("buy");
+
+const inpAmount = document.getElementById("amount");
+const btnDeposit = document.getElementById("deposit");
+const btnWithdraw = document.getElementById("withdraw");
+const msgBank = document.getElementById("msgBank");
+const elRateText = document.getElementById("rateText");
+const elInterestIntervalText = document.getElementById("interestIntervalText");
+
+// 株
+const elStockPrice = document.getElementById("stockPrice");
+const elShares = document.getElementById("shares");
+const elPositionValue = document.getElementById("positionValue");
+const inpShareAmount = document.getElementById("shareAmount");
+const btnBuyShares = document.getElementById("buyShares");
+const btnSellShares = document.getElementById("sellShares");
+const msgStock = document.getElementById("msgStock");
+
+const elTrendState = document.getElementById("trendState");
+const elEventState = document.getElementById("eventState");
+
+const elStockTickText = document.getElementById("stockTickText");
+const elStockVolText = document.getElementById("stockVolText");
+const elCrashProbText = document.getElementById("crashProbText");
+const elBubbleProbText = document.getElementById("bubbleProbText");
+const elSuperBubbleProbText = document.getElementById("superBubbleProbText");
+
+const elCrashMultText = document.getElementById("crashMultText");
+const elBubbleMultText = document.getElementById("bubbleMultText");
+const elSuperBubbleMultText = document.getElementById("superBubbleMultText");
+const elMeanPriceText = document.getElementById("meanPriceText");
+const elMeanRevertText = document.getElementById("meanRevertText");
+
+const canvas = document.getElementById("chart");
+const ctx = canvas.getContext("2d");
+
+// スロット
+const reel1 = document.getElementById("reel1");
+const reel2 = document.getElementById("reel2");
+const reel3 = document.getElementById("reel3");
+const inpBet = document.getElementById("bet");
+const btnSpin = document.getElementById("spin");
+const btnAutoStart = document.getElementById("autoStart");
+const btnAutoStop = document.getElementById("autoStop");
+const msgSlot = document.getElementById("msgSlot");
+const elRtpText = document.getElementById("rtpText");
+const elScaleText = document.getElementById("scaleText");
+
+/** =======================
+ * ユーティリティ
+ * ======================= */
+function setMsg(el, text) { el.textContent = text; }
+function randBetween(a, b) { return a + Math.random() * (b - a); }
+
+function saveAll() {
+  localStorage.setItem(KEY_WALLET, wallet);
+  localStorage.setItem(KEY_BANK, bank);
+  localStorage.setItem(KEY_INTERVAL, intervalMs);
+  localStorage.setItem(KEY_LEVEL, level);
+  localStorage.setItem(KEY_COST, cost);
+
+  localStorage.setItem(KEY_BANK_REM, bankRemainder);
+  localStorage.setItem(KEY_BANK_LAST_TS, bankLastInterestTs);
+
+  localStorage.setItem(KEY_STOCK_PRICE, stockPrice);
+  localStorage.setItem(KEY_SHARES, shares);
+
+  localStorage.setItem(KEY_TREND_STATE, trendState);
+  localStorage.setItem(KEY_TREND_UNTIL, trendUntilTs);
+
+  localStorage.setItem(KEY_PRICE_SERIES, JSON.stringify(priceSeries));
+}
+
+function readInt(el) {
+  const n = Number(el.value);
+  if (!Number.isFinite(n) || n <= 0 || !Number.isInteger(n)) return null;
+  return n;
+}
+
+/** =======================
+ * 預金利息（オフライン加算）
+ * ======================= */
+function applyBankInterestNow(nowTs = Date.now()) {
+  const elapsedMs = nowTs - bankLastInterestTs;
+  if (elapsedMs < INTEREST_INTERVAL_MS) return;
+
+  const steps = Math.floor(elapsedMs / INTEREST_INTERVAL_MS);
+  if (steps <= 0) return;
+
+  if (bank > 0) {
+    const factor = Math.pow(1 + INTEREST_RATE, steps) - 1;
+    bankRemainder += bank * factor;
+
+    const add = Math.floor(bankRemainder);
+    if (add > 0) {
+      bank += add;
+      bankRemainder -= add;
+    }
+  }
+
+  bankLastInterestTs += steps * INTEREST_INTERVAL_MS;
+  saveAll();
+}
+
+/** =======================
+ * 財布 自動増加（スタート中のみ）
+ * ======================= */
+function tickWallet() {
+  wallet += 1;
+  saveAll();
+  render();
+}
+function startWallet() {
+  if (walletTimer) return;
+  walletTimer = setInterval(tickWallet, intervalMs);
+  setMsg(msgWallet, "財布の自動増加を開始しました。");
+  render();
+}
+function stopWallet() {
+  if (!walletTimer) return;
+  clearInterval(walletTimer);
+  walletTimer = null;
+  setMsg(msgWallet, "財布の自動増加を停止しました。");
+  render();
+}
+
+/** =======================
+ * 株：トレンド切替
+ * ======================= */
+function refreshTrend(now = Date.now()) {
+  if (now < trendUntilTs) return;
+  trendState = (trendState === "BULL") ? "BEAR" : "BULL";
+  const dur = Math.floor(randBetween(TREND_MIN_MS, TREND_MAX_MS));
+  trendUntilTs = now + dur;
+}
+
+/** =======================
+ * 株：更新（常時）
+ * ======================= */
+function tickStock() {
+  const now = Date.now();
+  refreshTrend(now);
+
+  let eventLabel = "---";
+  const r = Math.random();
+
+  if (r < CRASH_PROB) {
+    const m = randBetween(CRASH_MULT_MIN, CRASH_MULT_MAX);
+    stockPrice = stockPrice * m;
+    eventLabel = "暴落";
+  } else if (r < CRASH_PROB + SUPER_BUBBLE_PROB) {
+    stockPrice = stockPrice * SUPER_BUBBLE_MULT;
+    eventLabel = "超バブル";
+  } else if (r < CRASH_PROB + SUPER_BUBBLE_PROB + BUBBLE_PROB) {
+    stockPrice = stockPrice * BUBBLE_MULT_MIN;
+    eventLabel = "バブル";
+  } else {
+    const drift = (trendState === "BULL") ? DRIFT_BULL : DRIFT_BEAR;
+    const noise = (Math.random() - 0.5) * STOCK_VOLATILITY;
+    const pull = (MEAN_PRICE - stockPrice) * MEAN_REVERT;
+    stockPrice = stockPrice + drift + noise + pull;
+  }
+
+  if (stockPrice < STOCK_FLOOR) stockPrice = STOCK_FLOOR;
+
+  priceSeries.push(Number(stockPrice.toFixed(1)));
+  if (priceSeries.length > 60) priceSeries.shift();
+
+  elEventState.textContent = eventLabel;
+
+  saveAll();
+  render();
+  drawChart();
+}
+
+/** =======================
+ * チャート描画
+ * ======================= */
+function drawChart() {
+  const w = canvas.width, h = canvas.height;
+  ctx.clearRect(0, 0, w, h);
+
+  ctx.beginPath();
+  ctx.rect(0.5, 0.5, w - 1, h - 1);
+  ctx.stroke();
+
+  if (!priceSeries || priceSeries.length < 2) return;
+
+  const minP = Math.min(...priceSeries);
+  const maxP = Math.max(...priceSeries);
+  const pad = (maxP - minP) === 0 ? 1 : (maxP - minP) * 0.1;
+  const lo = minP - pad, hi = maxP + pad;
+
+  ctx.font = "12px sans-serif";
+  ctx.fillText(hi.toFixed(1), 6, 14);
+  ctx.fillText(lo.toFixed(1), 6, h - 6);
+
+  const n = priceSeries.length;
+  ctx.beginPath();
+  for (let i = 0; i < n; i++) {
+    const x = (i / (n - 1)) * (w - 20) + 16;
+    const v = priceSeries[i];
+    const y = (1 - (v - lo) / (hi - lo)) * (h - 20) + 10;
+    if (i === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+}
+
+/** =======================
+ * 株：売買
+ * ======================= */
+function buyShares() {
+  const n = readInt(inpShareAmount);
+  if (n === null) { setMsg(msgStock, "株数は1以上の整数で入力してください。"); return; }
+  const total = n * stockPrice;
+  if (wallet < total) { setMsg(msgStock, "財布が足りません。"); return; }
+  wallet -= total;
+  shares += n;
+  saveAll();
+  setMsg(msgStock, `長尾テックを ${n} 株 買いました。（${Math.floor(total)}円）`);
+  render();
+}
+function sellShares() {
+  const n = readInt(inpShareAmount);
+  if (n === null) { setMsg(msgStock, "株数は1以上の整数で入力してください。"); return; }
+  if (shares < n) { setMsg(msgStock, "保有株が足りません。"); return; }
+  const total = n * stockPrice;
+  shares -= n;
+  wallet += total;
+  saveAll();
+  setMsg(msgStock, `長尾テックを ${n} 株 売りました。（${Math.floor(total)}円）`);
+  render();
+}
+
+/** =======================
+ * 預金：入出金
+ * ======================= */
+function deposit() {
+  applyBankInterestNow();
+  const amt = readInt(inpAmount);
+  if (amt === null) { setMsg(msgBank, "金額は1以上の整数で入力してください。"); return; }
+  if (wallet < amt) { setMsg(msgBank, "財布が足りません。"); return; }
+  wallet -= amt; bank += amt;
+  saveAll();
+  setMsg(msgBank, `預金へ ${amt} 円 入れました。`);
+  render();
+}
+function withdraw() {
+  applyBankInterestNow();
+  const amt = readInt(inpAmount);
+  if (amt === null) { setMsg(msgBank, "金額は1以上の整数で入力してください。"); return; }
+  if (bank < amt) { setMsg(msgBank, "預金が足りません。"); return; }
+  bank -= amt; wallet += amt;
+  saveAll();
+  setMsg(msgBank, `預金から ${amt} 円 引き出しました。`);
+  render();
+}
+
+/** =======================
+ * 速度アップ（財布の増加速度のみ）
+ * ======================= */
+function buySpeedUp() {
+  if (wallet < cost) { setMsg(msgWallet, "財布が足りません。"); return; }
+  if (intervalMs <= MIN_INTERVAL) { setMsg(msgWallet, "これ以上速くできません。"); return; }
+
+  wallet -= cost;
+  level += 1;
+  intervalMs = Math.max(MIN_INTERVAL, intervalMs - 50);
+  cost = Math.ceil(cost * 1.6);
+
+  saveAll();
+
+  if (walletTimer) {
+    clearInterval(walletTimer);
+    walletTimer = setInterval(tickWallet, intervalMs);
+  }
+
+  setMsg(msgWallet, "高速化モジュールを購入しました。");
+  render();
+}
+
+/** =======================
+ * スロット：抽選
+ * ======================= */
+function buildCdf(symbols) {
+  const total = symbols.reduce((a, x) => a + x.w, 0);
+  let acc = 0;
+  return symbols.map(x => {
+    acc += x.w / total;
+    return { s: x.s, p: acc };
+  });
+}
+const CDF = buildCdf(SYMBOLS);
+
+function drawSymbol() {
+  const r = Math.random();
+  for (const x of CDF) if (r <= x.p) return x.s;
+  return CDF[CDF.length - 1].s;
+}
+
+function prob(sym) {
+  const total = SYMBOLS.reduce((a,x)=>a+x.w,0);
+  const obj = SYMBOLS.find(x=>x.s===sym);
+  return (obj ? obj.w : 0) / total;
+}
+
+function baseWinMultiplier(a,b,c) {
+  if (a===b && b===c) return BASE_PAYOUT_3[a] || 0;
+  if (a===b || a===c) return BASE_PAYOUT_2[a] || 0;
+  if (b===c) return BASE_PAYOUT_2[b] || 0;
+  return 0;
+}
+
+function computeBaseRtp() {
+  const syms = SYMBOLS.map(x=>x.s);
+  let ev = 0;
+  for (const a of syms) for (const b of syms) for (const c of syms) {
+    const p = prob(a)*prob(b)*prob(c);
+    ev += p * baseWinMultiplier(a,b,c);
+  }
+  return ev;
+}
+
+const BASE_RTP = computeBaseRtp();
+let PAYOUT_SCALE = (BASE_RTP > 0) ? (TARGET_RTP / BASE_RTP) : 1;
+
+function scaledWinMultiplier(a,b,c) {
+  return baseWinMultiplier(a,b,c) * PAYOUT_SCALE;
+}
+
+function setReelSpinning(on) {
+  const cls = on ? "reel spin" : "reel";
+  reel1.className = cls;
+  reel2.className = cls;
+  reel3.className = cls;
+}
+
+let spinning = false;
+
+function spinOnce() {
+  if (spinning) return;
+
+  const bet = readInt(inpBet);
+  if (bet === null) { setMsg(msgSlot, "ベット額は1以上の整数で入力してください。"); return; }
+  if (wallet < bet) { setMsg(msgSlot, "財布が足りません。"); stopAuto(); return; }
+
+  spinning = true;
+  setReelSpinning(true);
+
+  wallet -= bet;
+
+  let ticks = 0;
+  const tempTimer = setInterval(() => {
+    reel1.textContent = drawSymbol();
+    reel2.textContent = drawSymbol();
+    reel3.textContent = drawSymbol();
+    ticks++;
+    if (ticks >= 8) {
+      clearInterval(tempTimer);
+
+      const a = drawSymbol();
+      const b = drawSymbol();
+      const c = drawSymbol();
+
+      reel1.textContent = a;
+      reel2.textContent = b;
+      reel3.textContent = c;
+
+      const mult = scaledWinMultiplier(a,b,c);
+      const win = Math.floor(bet * mult);
+
+      if (win > 0) wallet += win;
+
+      saveAll();
+      render();
+
+      if (win > 0) {
+        setMsg(msgSlot, `当たり：${a}${b}${c}\n倍率：${mult.toFixed(2)}x\n払い戻し：${win} 円`);
+      } else {
+        setMsg(msgSlot, `はずれ：${a}${b}${c}\n払い戻し：0 円`);
+      }
+
+      setReelSpinning(false);
+      spinning = false;
+    }
+  }, 60);
+}
+
+function startAuto() {
+  if (autoTimer) return;
+  setMsg(msgSlot, "オート開始。");
+  autoTimer = setInterval(() => {
+    if (!spinning) spinOnce();
+  }, AUTO_SPIN_MS);
+}
+
+function stopAuto() {
+  if (!autoTimer) return;
+  clearInterval(autoTimer);
+  autoTimer = null;
+  setMsg(msgSlot, "オート停止。");
+}
+
+/** =======================
+ * 表示更新
+ * ======================= */
+function render() {
+  applyBankInterestNow();
+
+  elWallet.textContent = Math.floor(wallet);
+  elBank.textContent   = Math.floor(bank);
+
+  elInterval.textContent = intervalMs;
+  elCost.textContent = cost;
+  elLevel.textContent = level;
+
+  elRateText.textContent = `${(INTEREST_RATE * 100).toFixed(4)}%`;
+  elInterestIntervalText.textContent = `${(INTEREST_INTERVAL_MS / 1000).toFixed(0)}秒ごと`;
+
+  elStockPrice.textContent = stockPrice.toFixed(1);
+  elShares.textContent = shares;
+  elPositionValue.textContent = Math.floor(shares * stockPrice);
+  elTrendState.textContent = (trendState === "BULL") ? "上昇期" : "下落期";
+
+  elStockTickText.textContent = `${(STOCK_TICK_MS / 1000).toFixed(0)}秒ごと`;
+  elStockVolText.textContent = `${STOCK_VOLATILITY.toFixed(1)}`;
+  elCrashProbText.textContent = `${(CRASH_PROB*100).toFixed(2)}%/秒`;
+  elBubbleProbText.textContent = `${(BUBBLE_PROB*100).toFixed(2)}%/秒`;
+  elSuperBubbleProbText.textContent = `${(SUPER_BUBBLE_PROB*100).toFixed(2)}%/秒`;
+
+  elCrashMultText.textContent = `×${CRASH_MULT_MIN.toFixed(2)}〜×${CRASH_MULT_MAX.toFixed(2)}`;
+  elBubbleMultText.textContent = `×${BUBBLE_MULT_MIN.toFixed(2)}（固定）`;
+  elSuperBubbleMultText.textContent = `×${SUPER_BUBBLE_MULT.toFixed(2)}（固定）`;
+
+  elMeanPriceText.textContent = `${MEAN_PRICE}`;
+  elMeanRevertText.textContent = `${MEAN_REVERT}`;
+
+  elRtpText.textContent = (TARGET_RTP * 100).toFixed(2) + "%";
+  elScaleText.textContent = PAYOUT_SCALE.toFixed(4);
+
+  btnStart.disabled = !!walletTimer;
+  btnBuy.disabled = (wallet < cost) || (intervalMs <= MIN_INTERVAL);
+  btnSellShares.disabled = (shares <= 0);
+
+  btnAutoStop.disabled = !autoTimer;
+  btnAutoStart.disabled = !!autoTimer;
+}
+
+/** =======================
+ * イベント
+ * ======================= */
+btnStart.onclick = startWallet;
+btnStop.onclick  = stopWallet;
+btnBuy.onclick   = buySpeedUp;
+
+btnDeposit.onclick = deposit;
+btnWithdraw.onclick = withdraw;
+
+btnBuyShares.onclick = buyShares;
+btnSellShares.onclick = sellShares;
+
+btnSpin.onclick = spinOnce;
+btnAutoStart.onclick = startAuto;
+btnAutoStop.onclick = stopAuto;
+
+// タブ非表示：財布増加は停止（株は継続）。オートは事故防止で停止（不要なら stopAuto() 行を消してください）
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) {
+    stopWallet();
+    stopAuto();
+  } else {
+    applyBankInterestNow();
+    render();
+    drawChart();
+  }
+});
+
+window.addEventListener("beforeunload", () => {
+  applyBankInterestNow();
+  saveAll();
+});
+window.addEventListener("pagehide", () => {
+  applyBankInterestNow();
+  saveAll();
+});
+
+/** =======================
+ * 起動
+ * ======================= */
+function boot() {
+  applyBankInterestNow();
+
+  if (!stockTimer) stockTimer = setInterval(tickStock, STOCK_TICK_MS);
+  if (!chartTimer) chartTimer = setInterval(drawChart, 1000);
+
+  render();
+  drawChart();
+}
+boot();
+</script>
+
+<!-- Service Worker 登録（PWA） -->
+<script>
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("./sw.js");
+  });
+}
+</script>
+
+</body>
+</html>
+
