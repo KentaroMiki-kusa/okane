@@ -43,8 +43,8 @@
   財布：<span id="wallet">0</span> 円　／　預金：<span id="bank">0</span> 円
 </div>
 <div class="small">
-  ※「スタート／ストップ」は財布の自動増加のみ。預金利息は時間経過で付与（低利・オフライン可）。
-  株価はストップ中でも動き続けます（タブ非表示時はブラウザ都合で間引きあり）。
+  ※オフライン進行対応：タブを閉じている間も「次回起動時にまとめて進行」します。<br>
+  ※株価は開いている間は常時更新。閉じている間は次回起動時にまとめて更新。
 </div>
 
 <div class="row">
@@ -82,7 +82,7 @@
   <div><b>預金利息（低利・無限）</b></div>
   <div>利率：<b><span id="rateText"></span></b></div>
   <div>付与間隔：<b><span id="interestIntervalText"></span></b></div>
-  <div class="small">※スタート/ストップに関係なく時間経過で利息（オフライン加算）</div>
+  <div class="small">※時間経過で利息（オフライン加算）</div>
 
   <div class="msg" id="msgBank"></div>
 </div>
@@ -110,16 +110,6 @@
   <div class="row">
     <button id="buyShares">買う</button>
     <button id="sellShares">売る</button>
-  </div>
-
-  <hr>
-
-  <div><b>株の設定</b></div>
-  <div class="small">
-    更新：<span id="stockTickText"></span> ／ ボラ：<span id="stockVolText"></span><br>
-    暴落確率：<span id="crashProbText"></span> ／ バブル確率：<span id="bubbleProbText"></span> ／ 超バブル確率：<span id="superBubbleProbText"></span><br>
-    暴落倍率：<span id="crashMultText"></span> ／ バブル倍率：<span id="bubbleMultText"></span> ／ 超バブル倍率：<span id="superBubbleMultText"></span><br>
-    平均回帰：基準 <span id="meanPriceText"></span> ／ 強さ <span id="meanRevertText"></span>
   </div>
 
   <div class="msg" id="msgStock"></div>
@@ -168,6 +158,9 @@ const KEY_INTERVAL = "intervalMs";
 const KEY_LEVEL    = "speedLevel";
 const KEY_COST     = "speedCost";
 
+// オフライン進行用
+const KEY_LAST_TS  = "lastSeenTs";
+
 // 預金利息（オフライン計算用）
 const KEY_BANK_REM = "bankRemainder";
 const KEY_BANK_LAST_TS = "bankLastInterestTs";
@@ -211,6 +204,9 @@ if (priceSeries.length === 0) priceSeries = Array.from({length: 60}, () => Numbe
  * ======================= */
 const MIN_INTERVAL = 100;
 
+// 財布のオフライン増加（閉じてても増えてた体験）
+const OFFLINE_WALLET_PER_SEC = 1; // 1秒あたり +1円（ここを好みで変更可）
+
 // 預金利息（低利）
 const INTEREST_INTERVAL_MS = 10000; // 10秒
 const INTEREST_RATE = 0.0005;       // 0.05% / 10秒
@@ -234,7 +230,6 @@ const CRASH_MULT_MAX = 0.95;
 
 // バブル固定×1.43
 const BUBBLE_MULT_MIN = 1.43;
-const BUBBLE_MULT_MAX = 1.43;
 
 // 超バブル固定
 const SUPER_BUBBLE_MULT = 2.00;
@@ -261,35 +256,23 @@ const SYMBOLS = [
   { s: "💎", w: 3 }
 ];
 
-// 基本配当（この後、RTP99%になるよう自動スケールする）
-// 3つ揃い倍率（ベット×倍率）
+// 配当（のちに全体スケールしてRTPに合わせる）
 const BASE_PAYOUT_3 = {
-  "🍒": 3.0,
-  "🍋": 3.2,
-  "🔔": 4.0,
-  "⭐": 6.0,
-  "7️⃣": 10.0,
-  "💎": 30.0
+  "🍒": 3.0, "🍋": 3.2, "🔔": 4.0, "⭐": 6.0, "7️⃣": 10.0, "💎": 30.0
 };
-// 2つ揃い倍率（どれか2一致で薄く返す）
 const BASE_PAYOUT_2 = {
-  "🍒": 0.2,
-  "🍋": 0.2,
-  "🔔": 0.25,
-  "⭐": 0.35,
-  "7️⃣": 0.6,
-  "💎": 1.5
+  "🍒": 0.2, "🍋": 0.2, "🔔": 0.25, "⭐": 0.35, "7️⃣": 0.6, "💎": 1.5
 };
 
 // オートスピン
 let autoTimer = null;
-const AUTO_SPIN_MS = 700; // 好きに調整可
+const AUTO_SPIN_MS = 700;
 
 /** =======================
  * タイマー
  * ======================= */
 let walletTimer = null;  // 財布 自動増加（スタート中のみ）
-let stockTimer  = null;  // 株価更新（常時）
+let stockTimer  = null;  // 株価更新（開いている間）
 let chartTimer  = null;
 
 /** =======================
@@ -324,18 +307,6 @@ const msgStock = document.getElementById("msgStock");
 
 const elTrendState = document.getElementById("trendState");
 const elEventState = document.getElementById("eventState");
-
-const elStockTickText = document.getElementById("stockTickText");
-const elStockVolText = document.getElementById("stockVolText");
-const elCrashProbText = document.getElementById("crashProbText");
-const elBubbleProbText = document.getElementById("bubbleProbText");
-const elSuperBubbleProbText = document.getElementById("superBubbleProbText");
-
-const elCrashMultText = document.getElementById("crashMultText");
-const elBubbleMultText = document.getElementById("bubbleMultText");
-const elSuperBubbleMultText = document.getElementById("superBubbleMultText");
-const elMeanPriceText = document.getElementById("meanPriceText");
-const elMeanRevertText = document.getElementById("meanRevertText");
 
 const canvas = document.getElementById("chart");
 const ctx = canvas.getContext("2d");
@@ -381,6 +352,10 @@ function readInt(el) {
   const n = Number(el.value);
   if (!Number.isFinite(n) || n <= 0 || !Number.isInteger(n)) return null;
   return n;
+}
+
+function markNowAsLastSeen() {
+  localStorage.setItem(KEY_LAST_TS, String(Date.now()));
 }
 
 /** =======================
@@ -441,7 +416,7 @@ function refreshTrend(now = Date.now()) {
 }
 
 /** =======================
- * 株：更新（常時）
+ * 株：オンライン更新（開いている間）
  * ======================= */
 function tickStock() {
   const now = Date.now();
@@ -451,8 +426,7 @@ function tickStock() {
   const r = Math.random();
 
   if (r < CRASH_PROB) {
-    const m = randBetween(CRASH_MULT_MIN, CRASH_MULT_MAX);
-    stockPrice = stockPrice * m;
+    stockPrice = stockPrice * randBetween(CRASH_MULT_MIN, CRASH_MULT_MAX);
     eventLabel = "暴落";
   } else if (r < CRASH_PROB + SUPER_BUBBLE_PROB) {
     stockPrice = stockPrice * SUPER_BUBBLE_MULT;
@@ -477,6 +451,71 @@ function tickStock() {
   saveAll();
   render();
   drawChart();
+}
+
+/** =======================
+ * 株：オフライン更新（まとめて回す軽量版）
+ * ======================= */
+function tickStockOffline() {
+  const now = Date.now();
+  refreshTrend(now);
+
+  const r = Math.random();
+
+  if (r < CRASH_PROB) {
+    stockPrice = stockPrice * randBetween(CRASH_MULT_MIN, CRASH_MULT_MAX);
+  } else if (r < CRASH_PROB + SUPER_BUBBLE_PROB) {
+    stockPrice = stockPrice * SUPER_BUBBLE_MULT;
+  } else if (r < CRASH_PROB + SUPER_BUBBLE_PROB + BUBBLE_PROB) {
+    stockPrice = stockPrice * BUBBLE_MULT_MIN;
+  } else {
+    const drift = (trendState === "BULL") ? DRIFT_BULL : DRIFT_BEAR;
+    const noise = (Math.random() - 0.5) * STOCK_VOLATILITY;
+    const pull = (MEAN_PRICE - stockPrice) * MEAN_REVERT;
+    stockPrice = stockPrice + drift + noise + pull;
+  }
+
+  if (stockPrice < STOCK_FLOOR) stockPrice = STOCK_FLOOR;
+
+  priceSeries.push(Number(stockPrice.toFixed(1)));
+  if (priceSeries.length > 60) priceSeries.shift();
+}
+
+/** =======================
+ * オフライン進行（D：財布＋預金＋株）
+ * ======================= */
+function applyOfflineProgress() {
+  const now = Date.now();
+  const last = Number(localStorage.getItem(KEY_LAST_TS)) || now;
+  const deltaMs = Math.max(0, now - last);
+
+  // 悪用・暴走防止：最大12時間分まで反映（必要なら増やしてOK）
+  const cappedMs = Math.min(deltaMs, 12 * 60 * 60 * 1000);
+  if (cappedMs <= 0) {
+    markNowAsLastSeen();
+    return;
+  }
+
+  // ① 財布：閉じている間も増えてた体験（1秒=+1円）
+  const walletGain = Math.floor(cappedMs / 1000) * OFFLINE_WALLET_PER_SEC;
+  wallet += walletGain;
+
+  // ② 預金：利息（既存ロジックに時間を食わせる）
+  // 「今からcappedMs前に閉じた」扱いにして利息付与
+  bankLastInterestTs = now - cappedMs;
+  applyBankInterestNow(now);
+
+  // ③ 株：閉じている間の秒数分だけティック
+  const steps = Math.floor(cappedMs / STOCK_TICK_MS);
+  for (let i = 0; i < steps; i++) tickStockOffline();
+
+  saveAll();
+  markNowAsLastSeen();
+
+  const mins = Math.floor(cappedMs / 60000);
+  const sec  = Math.floor((cappedMs % 60000) / 1000);
+  setMsg(msgWallet, `オフライン進行：+${walletGain}円（${mins}分${sec}秒）`);
+  setMsg(msgStock,  `オフライン進行：株を${steps}秒分更新`);
 }
 
 /** =======================
@@ -587,7 +626,7 @@ function buySpeedUp() {
 }
 
 /** =======================
- * スロット：抽選
+ * スロット
  * ======================= */
 function buildCdf(symbols) {
   const total = symbols.reduce((a, x) => a + x.w, 0);
@@ -622,8 +661,7 @@ function computeBaseRtp() {
   const syms = SYMBOLS.map(x=>x.s);
   let ev = 0;
   for (const a of syms) for (const b of syms) for (const c of syms) {
-    const p = prob(a)*prob(b)*prob(c);
-    ev += p * baseWinMultiplier(a,b,c);
+    ev += prob(a)*prob(b)*prob(c) * baseWinMultiplier(a,b,c);
   }
   return ev;
 }
@@ -675,7 +713,6 @@ function spinOnce() {
 
       const mult = scaledWinMultiplier(a,b,c);
       const win = Math.floor(bet * mult);
-
       if (win > 0) wallet += win;
 
       saveAll();
@@ -729,19 +766,6 @@ function render() {
   elPositionValue.textContent = Math.floor(shares * stockPrice);
   elTrendState.textContent = (trendState === "BULL") ? "上昇期" : "下落期";
 
-  elStockTickText.textContent = `${(STOCK_TICK_MS / 1000).toFixed(0)}秒ごと`;
-  elStockVolText.textContent = `${STOCK_VOLATILITY.toFixed(1)}`;
-  elCrashProbText.textContent = `${(CRASH_PROB*100).toFixed(2)}%/秒`;
-  elBubbleProbText.textContent = `${(BUBBLE_PROB*100).toFixed(2)}%/秒`;
-  elSuperBubbleProbText.textContent = `${(SUPER_BUBBLE_PROB*100).toFixed(2)}%/秒`;
-
-  elCrashMultText.textContent = `×${CRASH_MULT_MIN.toFixed(2)}〜×${CRASH_MULT_MAX.toFixed(2)}`;
-  elBubbleMultText.textContent = `×${BUBBLE_MULT_MIN.toFixed(2)}（固定）`;
-  elSuperBubbleMultText.textContent = `×${SUPER_BUBBLE_MULT.toFixed(2)}（固定）`;
-
-  elMeanPriceText.textContent = `${MEAN_PRICE}`;
-  elMeanRevertText.textContent = `${MEAN_REVERT}`;
-
   elRtpText.textContent = (TARGET_RTP * 100).toFixed(2) + "%";
   elScaleText.textContent = PAYOUT_SCALE.toFixed(4);
 
@@ -754,7 +778,7 @@ function render() {
 }
 
 /** =======================
- * イベント
+ * イベント紐づけ
  * ======================= */
 btnStart.onclick = startWallet;
 btnStop.onclick  = stopWallet;
@@ -770,23 +794,32 @@ btnSpin.onclick = spinOnce;
 btnAutoStart.onclick = startAuto;
 btnAutoStop.onclick = stopAuto;
 
-// タブ非表示：財布増加は停止（株は継続）。オートは事故防止で停止（不要なら stopAuto() 行を消してください）
+/** =======================
+ * 閉じる/非表示のときに時刻保存
+ * （リアルタイム継続は不可だが、次回起動時にまとめて進行）
+ * ======================= */
 document.addEventListener("visibilitychange", () => {
   if (document.hidden) {
+    // CPU節約で止めてもOK（オフライン進行で埋め合わせる）
     stopWallet();
     stopAuto();
+    markNowAsLastSeen();
+    saveAll();
   } else {
-    applyBankInterestNow();
+    // 復帰したら「見えない間」もまとめて進行
+    applyOfflineProgress();
     render();
     drawChart();
   }
 });
 
 window.addEventListener("beforeunload", () => {
+  markNowAsLastSeen();
   applyBankInterestNow();
   saveAll();
 });
 window.addEventListener("pagehide", () => {
+  markNowAsLastSeen();
   applyBankInterestNow();
   saveAll();
 });
@@ -795,7 +828,8 @@ window.addEventListener("pagehide", () => {
  * 起動
  * ======================= */
 function boot() {
-  applyBankInterestNow();
+  // 起動時にオフライン進行を反映（D：財布＋預金＋株）
+  applyOfflineProgress();
 
   if (!stockTimer) stockTimer = setInterval(tickStock, STOCK_TICK_MS);
   if (!chartTimer) chartTimer = setInterval(drawChart, 1000);
@@ -817,4 +851,6 @@ if ("serviceWorker" in navigator) {
 
 </body>
 </html>
+
+
 
